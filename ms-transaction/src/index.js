@@ -1,56 +1,15 @@
-const express = require('express');
-const { Kafka } = require('kafkajs');
-const { sequelize, Transaction } = require('./models');
+const app = require('./app');
+const { sequelize } = require('./models');
+const { producer } = require('./kafka/producer');
+const { initConsumer } = require('./kafka/consumer');
 
-const app = express();
-app.use(express.json());
-
-const kafka = new Kafka({ clientId: 'transaction-service', brokers: ['kafka:9092'] });
-const producer = kafka.producer();
-const consumer = kafka.consumer({ groupId: 'transaction-group' });
-
-app.post('/transactions', async (req, res) => {
-  const { accountExternalIdDebit, accountExternalIdCredit, amount } = req.body;
-
-  const transaction = await Transaction.create({
-    accountExternalIdDebit,
-    accountExternalIdCredit,
-    amount,
-    status: 'pending',
-  });
-
-  await producer.send({
-    topic: 'transaction-created',
-    messages: [{ key: String(transaction.id), value: JSON.stringify(transaction) }],
-  });
-
-  res.status(201).json(transaction);
-});
-
-const listenEvaluatedTransactions = async () => {
-  await consumer.connect();
-  await consumer.subscribe({ topic: 'transaction-evaluated', fromBeginning: true });
-
-  await consumer.run({
-    eachMessage: async ({ message }) => {
-      const data = JSON.parse(message.value.toString());
-      await Transaction.update({ status: data.status }, { where: { id: data.id } });
-    },
-  });
-};
-app.get('/transactions/:id', async (req, res) => {
-  try {
-    const transaction = await Transaction.findByPk(req.params.id);
-    if (!transaction) {
-      return res.status(404).json({ error: 'Transaction not found' });
-    }
-    res.json(transaction);
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: 'Internal Server Error' });
-  }
-});
-
+/**
+ * Please wait for the database to become available by attempting to connect several times.
+ *
+ * @param {number} [retries=10] - Number of reconnection attempts
+ * @throws {Error} If the connection cannot be established after several attempts
+ * @returns {Promise<void>}
+ */
 const waitForDB = async (retries = 10) => {
   while (retries) {
     try {
@@ -63,14 +22,28 @@ const waitForDB = async (retries = 10) => {
       await new Promise(res => setTimeout(res, 3000));
     }
   }
-
   throw new Error('❌ Could not connect to DB after several attempts');
 };
 
-app.listen(3000, async () => {
-  await waitForDB(); 
+/**
+ * Start the transaction service:
+ * - Wait for connection to the database
+ * - Synchronize the models
+ * - Connect Kafka producer
+ * - Initialize the Kafka consumer
+ * - Levanta el servidor Express en el puerto 3000
+ *
+ * @returns {Promise<void>}
+ */
+const start = async () => {
+  await waitForDB();
   await sequelize.sync();
   await producer.connect();
-  listenEvaluatedTransactions();
-  console.log('Transaction service running on port 3000');
-});
+  await initConsumer();
+
+  app.listen(3000, () => {
+    console.log('🚀 Transaction service running on port 3000');
+  });
+};
+
+start();
