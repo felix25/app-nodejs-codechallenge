@@ -1,5 +1,8 @@
 const express = require('express');
 const router = express.Router();
+const { graphqlHTTP } = require('express-graphql');
+const schema = require('../graphql/schema');
+
 const {
   createTransaction,
   getTransactionById,
@@ -67,5 +70,10 @@ router.get('/', async (req, res) => {
     res.status(500).json({ error: 'Internal Server Error' });
   }
 });
+
+router.use('/graphql', graphqlHTTP({
+  schema,
+  graphiql: true,
+}));
 
 module.exports = router;
